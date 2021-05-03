@@ -4,6 +4,13 @@ import 'package:dbus/dbus.dart';
 import 'package:test/test.dart';
 import 'package:avahi/avahi.dart';
 
+class MockAvahiHost {
+  final String address;
+  final String name;
+
+  const MockAvahiHost({required this.address, required this.name});
+}
+
 class MockAvahiRoot extends DBusObject {
   final MockAvahiServer server;
 
@@ -32,6 +39,34 @@ class MockAvahiRoot extends DBusObject {
         return DBusMethodSuccessResponse([DBusString(server.hostNameFqdn)]);
       case 'GetVersionString':
         return DBusMethodSuccessResponse([DBusString(server.versionString)]);
+      case 'ResolveAddress':
+        var address = (methodCall.values[2] as DBusString).value;
+        var host = server.findHostByAddress(address);
+        if (host == null) {
+          return DBusMethodErrorResponse.failed();
+        }
+        return DBusMethodSuccessResponse([
+          DBusInt32(0),
+          DBusInt32(0),
+          DBusInt32(0),
+          DBusString(host.address),
+          DBusString(host.name),
+          DBusUint32(0)
+        ]);
+      case 'ResolveHostName':
+        var name = (methodCall.values[2] as DBusString).value;
+        var host = server.findHostByName(name);
+        if (host == null) {
+          return DBusMethodErrorResponse.failed();
+        }
+        return DBusMethodSuccessResponse([
+          DBusInt32(0),
+          DBusInt32(0),
+          DBusString(host.name),
+          DBusInt32(0),
+          DBusString(host.address),
+          DBusUint32(0)
+        ]);
       case 'SetHostName':
         server.hostName = (methodCall.values[0] as DBusString).value;
         return DBusMethodSuccessResponse();
@@ -48,6 +83,7 @@ class MockAvahiServer extends DBusClient {
   String domainName;
   String hostName;
   String hostNameFqdn;
+  List<MockAvahiHost> hosts;
   final String versionString;
 
   MockAvahiServer(DBusAddress clientAddress,
@@ -55,8 +91,25 @@ class MockAvahiServer extends DBusClient {
       this.domainName = '',
       this.hostName = '',
       this.hostNameFqdn = '',
+      this.hosts = const [],
       this.versionString = ''})
       : super(clientAddress);
+
+  MockAvahiHost? findHostByName(String name) {
+    for (var host in hosts) {
+      if (host.name == name) {
+        return host;
+      }
+    }
+  }
+
+  MockAvahiHost? findHostByAddress(String address) {
+    for (var host in hosts) {
+      if (host.address == address) {
+        return host;
+      }
+    }
+  }
 
   Future<void> start() async {
     await requestName('org.freedesktop.Avahi');
@@ -191,6 +244,42 @@ void main() {
     await client.connect();
 
     expect(await client.getAlternativeServiceName('foo'), equals('foo #2'));
+
+    await client.close();
+  });
+
+  test('resolve host name', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+
+    var avahi = MockAvahiServer(clientAddress,
+        hosts: [MockAvahiHost(address: '192.168.1.1', name: 'foo.local')]);
+    await avahi.start();
+
+    var client = AvahiClient(bus: DBusClient(clientAddress));
+    await client.connect();
+
+    var result = await client.resolveHostName('foo.local');
+    expect(result.address.address, equals('192.168.1.1'));
+
+    await client.close();
+  });
+
+  test('resolve address', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+
+    var avahi = MockAvahiServer(clientAddress,
+        hosts: [MockAvahiHost(address: '192.168.1.1', name: 'foo.local')]);
+    await avahi.start();
+
+    var client = AvahiClient(bus: DBusClient(clientAddress));
+    await client.connect();
+
+    var result = await client.resolveAddress('192.168.1.1');
+    expect(result.name.name, equals('foo.local'));
 
     await client.close();
   });
